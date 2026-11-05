@@ -104,6 +104,7 @@ button:active{transform:translateY(0)}
     <div class="winners-head">
       <h3>🏆 得獎名單</h3>
       <button class="secondary" id="exportWinnersTextBtn">匯出得獎文字表格</button>
+      <button class="primary" id="exportWinnersPngBtn">匯出 PNG 圖片</button>
       <button class="ghost" id="resetWinnersBtn">重設得獎紀錄</button>
     </div>
     <ol id="winners"><li class="empty">目前還沒有得獎者</li></ol>
@@ -212,39 +213,161 @@ $('exportWinnersTextBtn').addEventListener('click',()=>{
     showToast('目前沒有得獎名單可以匯出。');
     return;
   }
+
+  // 使用 UTF-8 BOM 的 CSV 純文字格式，可直接用 Excel 開啟或匯入。
   const rows = [
-    ['得獎名單'],
-    ['序號', '中獎者', '備註'],
-    ...winners.map((winner,index)=>[
-      String(index+1),
-      winner.name,
-      winner.note || ''
-    ])
+    ['得獎人員', '獎品'],
+    ...winners.map(winner=>[winner.name, winner.note || ''])
   ];
-  const widths = [4, 18, 30];
-  const pad = (value,width) => {
-    const text = String(value ?? '');
-    const displayWidth = [...text].reduce((sum,ch)=>sum + (/[\\u0000-\\u00ff]/.test(ch) ? 1 : 2),0);
-    return text + ' '.repeat(Math.max(0,width-displayWidth));
-  };
-  const table = rows.map((row,index)=>{
-    if(index===0) return row[0];
-    return '| ' + row.map((cell,i)=>pad(cell,widths[i])).join(' | ') + ' |';
-  });
-  const separator = '|-' + widths.map(w=>'-'.repeat(w)).join('-|-') + '-|';
-  table.splice(1,0,separator);
-  table.splice(3,0,separator);
-  const content = '\\uFEFF' + table.join('\\r\\n');
-  const blob = new Blob([content],{type:'text/plain;charset=utf-8;'});
+  const csv = '\uFEFF' + rows.map(row =>
+    row.map(value => '"' + String(value ?? '').replace(/"/g,'""') + '"').join(',')
+  ).join('\r\n');
+
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href=url;
-  link.download='得獎名單與備註.txt';
+  link.href = url;
+  link.download = '得獎名單.csv';
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
-  showToast('已匯出得獎名單文字表格（包含備註）。');
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  showToast('已匯出 Excel 可讀取的得獎名單 CSV 檔案。');
+});
+
+
+$('exportWinnersPngBtn').addEventListener('click',()=>{
+  if(!winners.length){
+    showToast('目前沒有得獎名單可以匯出。');
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const width = 1000;
+  const padding = 40;
+  const tableWidth = width - padding * 2;
+  const leftWidth = tableWidth * 0.5;
+  const rightWidth = tableWidth - leftWidth;
+  const titleHeight = 82;
+  const headerHeight = 62;
+  const horizontalPad = 22;
+  const fontSize = 27;
+  const lineHeight = 39;
+  const font = `${fontSize}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+
+  // 先依文字換行計算每列高度，讓圖片高度隨得獎人數與備註長度自動調整。
+  ctx.font = font;
+  function wrapText(text, maxWidth){
+    const chars = [...String(text || '')];
+    const lines = [];
+    let line = '';
+    for(const ch of chars){
+      if(ch === '\n'){
+        lines.push(line);
+        line = '';
+        continue;
+      }
+      const test = line + ch;
+      if(line && ctx.measureText(test).width > maxWidth){
+        lines.push(line);
+        line = ch;
+      }else{
+        line = test;
+      }
+    }
+    lines.push(line);
+    return lines.length ? lines : [''];
+  }
+
+  const rowData = winners.map(winner=>{
+    const nameLines = wrapText(winner.name, leftWidth - horizontalPad * 2);
+    const prizeLines = wrapText(winner.note || '', rightWidth - horizontalPad * 2);
+    const lineCount = Math.max(nameLines.length, prizeLines.length, 1);
+    return {nameLines, prizeLines, height: Math.max(72, lineCount * lineHeight + 30)};
+  });
+
+  const totalHeight = padding * 2 + titleHeight + headerHeight
+    + rowData.reduce((sum,row)=>sum + row.height,0);
+  canvas.width = width;
+  canvas.height = totalHeight;
+
+  // 設定高解析度畫布的文字樣式。
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0,0,width,totalHeight);
+
+  // 紫色標題列。
+  ctx.fillStyle = '#6c63ff';
+  ctx.fillRect(padding,padding,tableWidth,titleHeight);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 34px "Noto Sans TC", "Microsoft JhengHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('得獎名單', width/2, padding + titleHeight/2);
+
+  let y = padding + titleHeight;
+
+  // 欄位標題。
+  ctx.fillStyle = '#eeeeFf';
+  ctx.fillRect(padding,y,tableWidth,headerHeight);
+  ctx.fillStyle = '#171717';
+  ctx.font = 'bold 28px "Noto Sans TC", "Microsoft JhengHei", sans-serif';
+  ctx.fillText('得獎人員', padding + leftWidth/2, y + headerHeight/2);
+  ctx.fillText('獎品', padding + leftWidth + rightWidth/2, y + headerHeight/2);
+
+  // 表格內容與黑色格線。
+  y += headerHeight;
+  ctx.font = font;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  rowData.forEach((row,index)=>{
+    const rowTop = y;
+    const centerY = rowTop + row.height/2;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(padding,rowTop,tableWidth,row.height);
+    ctx.fillStyle = '#111111';
+
+    const nameStartY = centerY - (row.nameLines.length - 1) * lineHeight/2;
+    row.nameLines.forEach((line,i)=>{
+      ctx.fillText(line, padding + horizontalPad, nameStartY + i*lineHeight);
+    });
+    const prizeStartY = centerY - (row.prizeLines.length - 1) * lineHeight/2;
+    row.prizeLines.forEach((line,i)=>{
+      ctx.fillText(line, padding + leftWidth + horizontalPad, prizeStartY + i*lineHeight);
+    });
+
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(padding,rowTop,tableWidth,row.height);
+    y += row.height;
+  });
+
+  // 外框與標題／表頭分隔線。
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(padding,padding,tableWidth,totalHeight-padding*2);
+  ctx.beginPath();
+  ctx.moveTo(padding,padding + titleHeight);
+  ctx.lineTo(padding + tableWidth,padding + titleHeight);
+  ctx.moveTo(padding,y - rowData.reduce((sum,row)=>sum + row.height,0));
+  ctx.lineTo(padding + tableWidth,y - rowData.reduce((sum,row)=>sum + row.height,0));
+  ctx.stroke();
+
+  canvas.toBlob(blob=>{
+    if(!blob){
+      showToast('PNG 圖片產生失敗，請再試一次。');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '得獎名單.png';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    showToast('已下載得獎名單 PNG 圖片。');
+  },'image/png');
 });
 
 $('resetWinnersBtn').addEventListener('click',()=>{
